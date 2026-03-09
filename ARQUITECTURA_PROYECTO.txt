@@ -1,0 +1,206 @@
+ARQUITECTURA DEL PROYECTO - PosesForGym
+=======================================
+
+1) Visión general del proyecto
+------------------------------
+PosesForGym es una aplicación de visión por computadora orientada al entrenamiento físico.
+Su objetivo es detectar ejercicios a partir de pose estimation con YOLO, procesar landmarks corporales
+y aplicar reglas biomecánicas para decidir si un movimiento corresponde a una repetición válida.
+
+En su estado actual, el proyecto está enfocado en la detección de curl de bíceps utilizando el lado derecho del cuerpo,
+pero la arquitectura fue organizada para poder extenderse a más ejercicios sin romper la base existente.
+
+
+2) Propósito de la arquitectura
+-------------------------------
+La arquitectura modular separa responsabilidades para mejorar:
+
+- Mantenibilidad: cada módulo tiene un rol concreto y acotado.
+- Escalabilidad: permite añadir nuevos ejercicios o validadores sin reescribir el flujo principal.
+- Testabilidad: funciones de cálculo y reglas pueden probarse de forma aislada.
+- Claridad técnica: un desarrollador nuevo puede identificar rápidamente dónde vive cada parte de la lógica.
+
+En lugar de concentrar todo en un solo script, la solución está dividida en capas: entrada/ejecución,
+inferencia de pose, estructuración de landmarks, cálculo geométrico y lógica de ejercicio.
+
+
+3) Estructura y responsabilidad por carpeta/módulo
+---------------------------------------------------
+
+3.1) src/main.py
+----------------
+`main.py` es el punto de entrada del sistema.
+
+Responsabilidades principales:
+- Parsear argumentos de ejecución (modelo, fuente de video/cámara, umbrales, logging, etc.).
+- Configurar el logging de consola y archivo.
+- Inicializar el pipeline de inferencia y el pipeline de detección del ejercicio.
+- Controlar el bucle principal de frames.
+- Dibujar overlays en pantalla (repeticiones, ángulos, validez del movimiento).
+- Gestionar cierre de ventana, manejo de errores de fuente y resumen final.
+
+En resumen: orquesta el sistema completo, pero delega la lógica específica en módulos especializados.
+
+
+3.2) Módulo src/pose
+--------------------
+El módulo `pose` concentra todo lo relacionado con la pose humana detectada por YOLO.
+
+Su objetivo es desacoplar la parte de inferencia y geometría del dominio específico del ejercicio.
+
+
+3.2.1) src/pose/inference.py
+-----------------------------
+`inference.py` encapsula la integración con YOLO para pose estimation.
+
+Responsabilidades:
+- Resolver la ruta del modelo (local o referencia que YOLO pueda cargar).
+- Normalizar la fuente de entrada (por ejemplo, convertir "0" a índice de webcam).
+- Validar disponibilidad de cámara cuando la fuente es un índice.
+- Cargar el modelo de inferencia.
+- Ejecutar inferencia en modo streaming y devolver resultados frame a frame.
+
+Este módulo es la puerta de entrada entre la aplicación y el motor de inferencia.
+
+
+3.2.2) src/pose/landmarks.py
+-----------------------------
+`landmarks.py` convierte la salida cruda de keypoints en una estructura utilizable por el dominio.
+
+Responsabilidades:
+- Definir una estructura de landmarks del brazo derecho (cadera, hombro, codo, muñeca).
+- Aplicar suavizado temporal (EMA) para reducir ruido entre frames.
+- Extraer landmarks del primer sujeto detectado en cada frame.
+
+Este módulo reduce la complejidad de tratar tensores crudos y entrega datos semánticos para la lógica del ejercicio.
+
+
+3.2.3) src/pose/angles.py
+--------------------------
+`angles.py` contiene utilidades geométricas reutilizables.
+
+Responsabilidades:
+- Calcular ángulos articulares a partir de tres puntos 2D.
+- Parsear parámetros geométricos auxiliares (por ejemplo, tamaño de ventana).
+
+Este módulo evita duplicación de matemática en otras capas y centraliza cálculos base.
+
+
+3.3) Módulo src/exercises
+-------------------------
+El módulo `exercises` define la lógica de negocio de cada ejercicio detectado.
+
+Es la capa que transforma pose + métricas en una decisión de entrenamiento.
+
+
+3.3.1) src/exercises/bicep_curl.py
+-----------------------------------
+`bicep_curl.py` implementa la detección de curl de bíceps.
+
+Responsabilidades:
+- Mantener el estado de la repetición (máquina de estados DOWN/UP).
+- Evaluar patrón de movimiento del codo para contar repeticiones.
+- Validar que el movimiento no se confunda con un shoulder press (control de hombro).
+- Exponer función de detección para consumir landmarks y devolver métricas.
+- Entregar salida estructurada por frame (ángulo de codo, ángulo de hombro, repeticiones, validez).
+
+Es el núcleo funcional del ejercicio actual.
+
+
+3.4) Módulo src/rules
+---------------------
+El módulo `rules` concentra reglas biomecánicas independientes del flujo de inferencia.
+
+Su propósito es encapsular criterios de validación para que sean reutilizables y fáciles de ajustar.
+
+
+3.4.1) src/rules/validators.py
+-------------------------------
+`validators.py` contiene funciones de validación del movimiento.
+
+Responsabilidades:
+- Validar neutralidad/posición del hombro.
+- Validar desplazamientos permitidos del hombro respecto al torso.
+- Validar si una repetición cumple condiciones mínimas de calidad.
+
+Estas reglas se usan desde la lógica del ejercicio para filtrar repeticiones inválidas.
+
+
+3.5) Carpeta models/
+--------------------
+`models/` está destinada al almacenamiento de modelos entrenados o exportados.
+
+Objetivo:
+- Centralizar artefactos de inferencia (por ejemplo, pesos `.pt`, exportaciones a otros formatos).
+- Evitar dispersión de modelos por el repositorio.
+- Facilitar control de versiones de arquitectura sin depender de rutas ambiguas.
+
+
+3.6) Carpeta tests/
+-------------------
+`tests/` contiene pruebas automatizadas del proyecto.
+
+Objetivo:
+- Verificar cálculos geométricos y reglas de validación.
+- Reducir regresiones cuando se ajustan umbrales o se refactoriza código.
+- Dar confianza para extender a nuevos ejercicios.
+
+
+3.7) requirements.txt y .gitignore
+----------------------------------
+- `requirements.txt`: define dependencias necesarias para ejecutar el proyecto.
+- `.gitignore`: evita subir artefactos temporales, modelos pesados, logs y archivos de entorno.
+
+
+4) Flujo de datos y ejecución (inicio a fin)
+---------------------------------------------
+
+4.1) Cómo se inicia el programa
+-------------------------------
+1. El usuario ejecuta `python src/main.py` con parámetros opcionales.
+2. `main.py` parsea argumentos y configura logging.
+3. Se crea el componente de inferencia y el pipeline de detección del ejercicio.
+
+
+4.2) Cómo se ejecuta la inferencia de pose
+------------------------------------------
+1. `pose/inference.py` valida y normaliza la fuente (archivo, video, webcam).
+2. Se carga el modelo YOLO de pose.
+3. Se inicia inferencia en modo streaming, entregando resultados por frame.
+
+
+4.3) Cómo se obtienen los landmarks
+-----------------------------------
+1. Para cada frame, `pose/landmarks.py` toma keypoints crudos de YOLO.
+2. Se extraen landmarks relevantes del brazo derecho (hip/shoulder/elbow/wrist).
+3. Se aplica suavizado EMA para estabilizar coordenadas.
+
+
+4.4) Cómo se calculan los ángulos
+---------------------------------
+1. Con landmarks ya estructurados, `pose/angles.py` calcula:
+   - Ángulo de codo (hombro-codo-muñeca).
+   - Ángulo de hombro (cadera-hombro-codo).
+2. Esos ángulos se usan como variables base para decidir estado del ejercicio.
+
+
+4.5) Cómo se detecta el ejercicio
+---------------------------------
+1. `exercises/bicep_curl.py` procesa ángulos y estado histórico del movimiento.
+2. Se aplica máquina de estados (fase de subida y bajada).
+3. `rules/validators.py` verifica condiciones biomecánicas para no contar falsos positivos.
+4. Si el patrón y reglas se cumplen, se incrementa el contador de repeticiones.
+5. `main.py` muestra resultados en pantalla y registra métricas en logs.
+
+
+5) Resumen operativo
+--------------------
+- `main.py` coordina.
+- `pose/` obtiene y prepara datos de pose.
+- `exercises/` decide si hay repetición válida.
+- `rules/` impone criterios biomecánicos.
+- `tests/` protege calidad.
+- `models/` organiza artefactos del modelo.
+
+Esta separación permite mantener la funcionalidad actual y, al mismo tiempo,
+facilita ampliar el sistema a nuevos ejercicios y reglas sin desordenar el código.
